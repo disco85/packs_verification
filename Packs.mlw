@@ -1,0 +1,657 @@
+(*
+
+NOTE: use Z3 (default CVC4 leads to timeout, at least on new_rect_is_needed):
+- install Z3
+- why3 config detect
+- why3 config list-provers : and you should see Z3. Then use z3 in "-P z3" option
+*)
+
+module Packs
+  use int.Int
+  use int.Abs
+  use int.MinMax
+  use ref.Refint
+  use array.Array
+  use list.List as L
+  use list.Append
+  use list.Length as LL
+  use list.Nth as LN
+  use list.Mem as LM
+  use option.Option
+  use int.ComputerDivision as CD
+  (*use int.EuclideanDivision as CD*)
+
+  type num =
+    | NaN
+    | MinusInf
+    | Fin int
+    | PlusInf
+
+
+  let sign (a:int) : int =
+  ensures { result = -1 \/ result = 1 }
+    if a < 0 then -1 else 1
+
+  (*axiom Div_a1 :
+    forall a b:int. b <> 0 -> (CD.div a b) <= a
+  lemma div_mult_le :
+    forall a b:int. b <> 0 -> (CD.div a b) * b <= a *)
+
+
+  let round_div (x y: int) : int =
+  requires { y <> 0 }
+  ensures { x = 0 -> result = 0 }
+  ensures { x > 0 /\ y > 0 -> (x - y) <= (result * y) <= (x + y) }  (* TODO do it better! *)
+  ensures { x < 0 /\ y > 0 -> (x - y) <= (result * y) <= (x + y) }
+    if x >= 0 then CD.div (x + (CD.div y 2)) y
+    else           CD.div (x - (CD.div y 2)) y
+    
+
+  (* `function` - logic/specification, can be used in predicates. `let ...` - program/execution, cannot be *)
+  
+  let num_ge (x y: num) : bool =
+    match x, y with
+    | NaN, _             -> false
+    | _, NaN             -> false
+    | MinusInf, MinusInf -> false
+    | MinusInf, _        -> false
+    | PlusInf, PlusInf   -> false
+    | PlusInf, _         -> true
+    | _, PlusInf         -> false
+    | _, MinusInf        -> true
+    | Fin a, Fin b       -> a >= b
+    end
+
+  let num_gt (x y: num) : bool =
+    match x, y with
+    | NaN, _             -> false
+    | _, NaN             -> false
+    | MinusInf, MinusInf -> false
+    | MinusInf, _        -> false
+    | PlusInf, PlusInf   -> false
+    | PlusInf, _         -> true
+    | _, PlusInf         -> false
+    | _, MinusInf        -> true
+    | Fin a, Fin b       -> a > b
+    end
+
+
+  let calc_avg (ps: array int) : int =
+    if length ps = 0 then 0
+    else begin
+      let sum: ref int = ref 0 in
+      for i = 0 to length ps - 1 do
+        sum := !sum + ps[i]
+      done;
+      round_div !sum (length ps)
+    end
+
+
+  let arr_minmax (ps: array int) (cmp: int -> int -> bool) : option int =
+  ensures { length ps > 0 <-> result <> None }  
+  ensures { length ps = 0 <-> result = None }
+    if length ps = 0 then None
+    else begin
+      let m: ref (option int) = ref None in
+      for i = 0 to length ps - 1 do
+      invariant { 0 < i -> !m <> None }   (* variant {..} is irrelevant for `for`-s *)
+        match !m with
+          | None        -> m := Some ps[i]
+          | Some prev_m -> if (cmp prev_m ps[i]) then m := Some ps[i]
+        end
+      done;
+      !m
+    end
+
+
+  let arr_min (ps: array int) : option int =
+  ensures { length ps > 0 <-> result <> None }  
+  ensures { length ps = 0 <-> result = None }
+    arr_minmax ps (<)
+
+
+  let arr_max (ps: array int) : option int =
+  ensures { length ps > 0 <-> result <> None }    
+  ensures { length ps = 0 <-> result = None }
+    arr_minmax ps (>)
+
+
+  let array_max (ps: array int) : int =
+  requires { length ps > 0 }
+    let m: ref int = ref ps[0] in
+    for i = 0 to length ps - 1 do
+      if !m > ps[i] then m := ps[i]
+    done;
+    !m
+
+
+  let array_min (ps: array int) : int =
+  requires { length ps > 0 }
+    let m: ref int = ref ps[0] in
+    for i = 0 to length ps - 1 do
+      if !m < ps[i] then m := ps[i]
+    done;
+    !m
+
+
+  let calc_diffs (ps: array int) (absolute: bool) : array int =
+  ensures {
+    (length ps = 0 -> length result = 0) /\
+    (length ps > 0 -> length result = length ps - 1)
+  }
+    let diffs_num = max ((length ps) - 1) 0 in
+    let diffs = make diffs_num 0 in
+    let i:ref int = ref 0 in
+    if diffs_num = 0 then
+      diffs
+    else begin
+      while !i <> length ps - 1 do
+      invariant { 0 <= !i <= length ps - 1 }
+      invariant { !i <= length diffs }
+      variant { length ps - 1 - !i }
+        let diff = ps[!i + 1] - ps[!i] in
+        let diff = if absolute then abs diff else diff in
+        diffs[!i] <- diff;
+        incr i
+      done;
+      diffs
+    end
+
+
+  let calc_ratio (x y:int) : num =
+    let abs_x = abs x in
+    let abs_y = abs y in
+    let res_sign = (sign x) * (sign y) in
+    if (abs_x = 0) && (abs_y = 0) then
+      NaN
+    else if abs_x > abs_y then
+      if abs_y = 0 then
+        if res_sign < 0 then MinusInf
+        else PlusInf
+      else
+        Fin (round_div x y)
+    else if abs_x < abs_y then
+      if abs_x = 0 then
+        if res_sign < 0 then MinusInf
+        else PlusInf
+      else
+        Fin (round_div y x)
+    else
+      if abs_x = 0 then NaN
+      else (Fin res_sign)
+
+
+  let rec list_min (l: L.list int) : int =
+  requires { l <> L.Nil }
+  variant  { LL.length l }
+    match l with
+    | L.Nil -> absurd
+    | L.Cons x L.Nil -> x
+    | L.Cons x r ->
+        let m = list_min r in
+        if x < m then x else m
+    end
+
+
+  let rec list_max (l: L.list int) : int =
+  requires { l <> L.Nil }
+  variant  { LL.length l }
+    match l with
+    | L.Nil -> absurd
+    | L.Cons x L.Nil -> x
+    | L.Cons x r ->
+        let m = list_max r in
+        if x > m then x else m
+    end
+
+
+  let new_rect_is_needed (slice: array int) (p: int) (tolerance: int) : bool =
+  requires { length slice > 0 }
+  requires { tolerance > 0 }
+    let slice_max: int = array_max slice in
+    let slice_min: int = array_min slice in
+      (num_gt (calc_ratio p slice_max) (Fin tolerance)) ||
+      (num_gt (calc_ratio p slice_min) (Fin tolerance))
+
+
+  let new_rect_is_needed_1 (slice: array int) (p: int) (tolerance: int) : option bool =
+  requires { tolerance >= 0 }
+  ensures { length slice > 0 -> result <> None }
+    if length slice > 0 then
+      let slice_max: option int = arr_max slice in
+      let slice_min: option int = arr_min slice in
+      match (slice_max, slice_min) with
+      | (Some slice_max1, Some slice_min1) ->
+        let r = (num_gt (calc_ratio p slice_max1) (Fin tolerance)) ||
+                (num_gt (calc_ratio p slice_min1) (Fin tolerance))
+        in Some r      
+      | _, _                               -> absurd  (* `absurd` instructs Why3 to check validity of it
+                                                         ie, that it is really unreachable, ie, it is
+                                                         absurd! If yes, it will be reported as "Valid" *)
+      end
+    else None
+
+
+  let new_rect_is_needed_2 (slice: L.list int) (p: int) (tolerance: int) : bool =
+  requires { LL.length slice > 0 }
+  requires { tolerance > 0 }
+    let slice_max: int = list_max slice in
+    let slice_min: int = list_min slice in
+      (num_gt (calc_ratio p slice_max) (Fin tolerance)) ||
+      (num_gt (calc_ratio p slice_min) (Fin tolerance))
+
+
+  let rec function list_nth (l: L.list int) (n: int): option int =
+  requires { 0 <= n < LL.length l }
+  ensures {
+    match result with
+    | Some el -> LM.mem el l
+    | None    -> false
+    end
+  }
+  variant { n }
+  match l with
+  | L.Cons x tl -> if n = 0 then Some x else list_nth tl (n - 1)
+  | L.Nil -> None
+  end
+
+
+  let list_to_array (l: L.list int) : array int =
+    ensures { LL.length l = length result }
+    ensures {
+      (* preserving of elements *)
+      forall k:int. 0 <= k < LL.length l ->
+        Some result[k] = list_nth l k
+    }
+    let a = make (LL.length l) 0 in
+    for i = 0 to LL.length l - 1 do
+      (* These 2 invariants are needed to overcome the fact that Why3 reasons about
+       * the current state and invariants - it does not "know" the history of what
+       * it executed at prev. steps. These invariants help to prove `ensures` about
+       * preserving of elements. The 2nd invariant exactly checks the history and
+       * connects `l` + every item in it saved early is in the same position of `a`!
+       *)
+      invariant { 0 <= i <= LL.length l }
+      invariant {
+        forall k:int. 0 <= k < i ->
+          Some a[k] = list_nth l k      (* check of history *)
+      }
+      match list_nth l i with
+      | Some el -> a[i] <- el;
+      | None    -> absurd
+      end;
+    done;
+    a
+
+
+  let rec make_list (n: int) (el: int) : L.list int =
+  requires { n >= 0 }
+  ensures { LL.length result = n }
+  ensures { forall i: int. 0 <= i < LL.length result ->
+            LN.nth i result = Some el }  
+  variant { n }
+    if n = 0 then
+      L.Nil
+    else
+      L.Cons el (make_list (n - 1) el)
+
+
+  let option_eq (x: option int) (y: option int) : bool =
+    match x, y with
+    | Some xx, Some yy -> xx = yy
+    | None, None       -> true
+    | _, _             -> false
+    end
+
+
+  let option_tuple_eq (x: option (int, int)) (y: option (int, int)) : bool =
+    match x, y with
+    | Some (x1, x2), Some (y1, y2) -> x1 = y1 && x2 = y2
+    | None, None       -> true
+    | _, _             -> false
+    end
+
+
+  let rec list_last (l: L.list 'a) : option 'a =
+  variant { l }
+    match l with
+    | L.Nil          -> None
+    | L.Cons x L.Nil -> Some x
+    | L.Cons _ r     -> list_last r
+    end
+
+
+  predicate list_elems_are_correct_index (l: L.list int) (n: int) =
+  (* The predicate checks that all elements in the list `l` can be index bounded by `n`,
+   * ie, 0 <= el < n. IT is used in `list_elems_are_correct_index__append_singleton` lemma
+   *)
+    match l with
+    | L.Nil      -> true
+    | L.Cons x r -> 0 <= x < n /\ list_elems_are_correct_index r n
+    end
+
+
+  (* This lemma is needed to prove the invariant:
+   *
+   *   invariant { list_elems_are_correct_index !res_ranges (length res_ps_arr) }
+   *
+   * in `approximate_by_rectangles`. This invariant tells that every item is `res_ranges`
+   * is a index of items in `res_ps`/`res_ps_arr` (`res_ranges` is a list of indexes, so
+   * no one item in `res_ranges` can violate the `res_ps` bounds - it can be useful in
+   * the next function: `find_clusters_centers`). But to prove this invarint, we have
+   * to hint Why3 with some lemma. Without it, we hit timeout/out of memory.
+   *
+   * It seems the timeout problem is connected with construction of a list and need to
+   * check the invariant when the list is growing (?) - we add `i` to the list, and we
+   * know that `i` is inside bounds, so Why3 has to check that adding only of `i` to a
+   * list means that all items of that list are inside the same bounds. More detailed:
+   * Z3/CVC4/... do not automatically know that `list_elems_lt` is preserved by `++` !
+   *
+   * This lemma proves it by induction. `requires` is A, `ensures` is B in A -> B.
+   * `variant` is a termination measure (bcs the lemma is recursive).
+   * The logic of the lemma is in its body (it is like FStar) - returning of () means
+   * "true/fact!", and we prove the base of the induction for an empty list then
+   * we state that for non-empty list we pass through it to the base case ("next step"?),
+   * the proposition that we prove is B, ie:
+   *
+   *   ∀x: 0 <= x < n                             (any integer that is also valid index)
+   *   list_elems_are_correct_index (l ++ [x]) n  (property is preserved after .. ++ [x])
+   * 
+   *)
+  let rec lemma list_elems_are_correct_index__append_singleton (l: L.list int) (x n: int) =
+  requires { list_elems_are_correct_index l n /\ 0 <= x < n }
+  variant { LL.length l }
+  ensures { list_elems_are_correct_index (l ++ L.Cons x L.Nil) n }
+    match l with
+    | L.Nil      -> ()
+    | L.Cons _ r -> list_elems_are_correct_index__append_singleton r x n
+    end
+
+
+  (*lemma list_to_array_property_preserving:
+    forall l: L.list int, a: array int, k n: int.
+    LL.length l = length a /\
+    0 <= k < LL.length l /\
+    Some a[k] = list_nth l k /\
+    (match list_nth l k with
+     | Some x -> x < n
+     | None   -> false
+     end) ->
+     a[k] < n *)
+
+  (*
+  lemma list_to_array_property_preserving:
+    forall l_indexes: L.list int, l_in: L.list int, a_indexes: array int, a_in: array int, i j k: int.
+    LL.length l_indexes = length a_indexes /\
+    LL.length l_in = length a_in /\
+    0 <= i < LL.length l_indexes /\
+    Some a_indexes[i] = list_nth l_indexes i /\
+    0 <= j < LL.length l_in /\
+    Some a_in[j] = list_nth l_in j /\
+    list_elems_are_correct_index l_indexes (LL.length l_in) /\
+    0 <= k < length a_indexes ->
+    a_indexes[k] < length a_in
+*)
+
+(*
+lemma test:
+  forall x:int, r:L.list int, n:int.
+    list_elems_are_correct_index (L.Cons x r) n ->
+    (0 <= x < n /\ list_elems_are_correct_index r n)
+*)
+
+(* This axiom is workaround for:
+ *   let isovalue: int = isovalues_arr[ranges_arr[irange]] in
+ * in `find_clusters_centers`, so Why3 be able to prove bounds violation, it has all info
+ * for it but it cannot connect separate items (to connect list/array items bound by
+ * `LL.length isovalues`, ie, `ranges/ranges_arr` values are 0..|isovalues|-1).
+ *)
+
+axiom list_element_is_valid:
+  forall l:L.list int, n k:int.
+    list_elems_are_correct_index l n ->
+    0 <= k < LL.length l ->
+    match list_nth l k with
+    | Some x -> 0 <= x < n
+    | None -> false
+    end
+
+
+(*lemma list_element_is_valid:
+  forall l:L.list int, n k:int.
+    list_elems_are_correct_index l n ->
+    0 <= k < LL.length l ->
+    match LN.nth k l with
+    | Some x -> 0 <= x < n
+    | None -> false
+    end
+*)
+
+(*let rec lemma list_element_is_valid
+    (l: L.list int) (n k: int) =
+    requires { list_elems_are_correct_index l n }
+    requires { 0 <= k < LL.length l }
+    variant  { k }
+    ensures {
+      match list_nth l k with
+      | Some x -> 0 <= x < n
+      | None -> false
+      end
+    }
+  match l with
+  | L.Nil ->
+      ()
+  | L.Cons x tl ->
+      if k = 0 then
+        ()
+      else
+        list_element_is_valid tl n (k - 1)
+  end
+*)
+
+
+(*lemma array_index_is_valid:
+  forall l_indexes: L.list int,
+         l_in: L.list int,
+         a_indexes: array int,
+         a_in: array int,
+         k: int.
+    LL.length l_indexes = length a_indexes /\
+    LL.length l_in = length a_in /\
+    0 <= k < LL.length l_indexes /\
+    Some a_indexes[k] = list_nth l_indexes k /\
+    list_elems_are_correct_index l_indexes (LL.length l_in) ->
+    0 <= a_indexes[k] < length a_in
+*)
+
+
+  (*let list_to_array_property_preserving_f (l: L.list int) (a: array int) (n: int) : unit =
+    requires { LL.length l = length a }
+    requires {
+      forall k:int. 0 <= k < LL.length l /\
+      Some a[k] = list_nth l k }
+    ensures { list_elems_are_correct_index l n -> forall k. 0 <= k < length a -> a[k] < n }
+    for i = 0 to length a do
+      if a[i] >= n then absurd
+    done*)
+
+
+  let approximate_by_rectangles (ps: array int) (tolerance: int) : (L.list int, L.list int) =
+  requires { tolerance > 0 }
+  (* invariants and asserts help to prove `ensures`, else they fail with timeout *)
+  ensures {
+    length ps > 0 ->
+      match result with
+      | (a, b) -> LL.length a > 0 /\ LL.length b > 0
+      end
+  }
+  ensures {
+    match result with
+    | (a, b) -> LL.length a <= LL.length b
+    end  
+  }
+  ensures {
+    (* connects 1st,2nd items of the returning tuple: `a` is a list of indexes in `b` *)
+    match result with
+    | (a, b) -> list_elems_are_correct_index a (LL.length b)
+    end
+  }
+    let res_ps: ref (L.list int) = ref L.Nil in
+    let res_ranges: ref (L.list int) = ref L.Nil in
+    let slice: ref (L.list int) = ref L.Nil in
+    for i = 0 to length ps - 1 do
+    invariant { 0 <= i <= length ps }               (* Why3 checks the value after termination of loop to,
+                                                       so `length ps` *)
+    invariant { i > 0 -> LL.length !slice > 0 }
+      (* call of `list_to_array` in loop is horrible performance, but for proving - it
+       * is not not a problem. It is needed due to duality of Python's list (it is
+       * translation from Python) - it is indexable but also appendable/extendable *)
+      let p = ps[i] in
+      if LL.length !slice = 0 then
+        slice := !slice ++ (L.Cons p L.Nil)
+      else if new_rect_is_needed (list_to_array !slice) p tolerance then
+        begin
+          let slice_avg = calc_avg (list_to_array !slice) in
+          res_ps := !res_ps ++ (make_list (LL.length !slice) slice_avg);
+          slice := make_list 1 p
+        end
+      else
+        slice := !slice ++ (L.Cons p L.Nil)
+    done;
+    if LL.length !slice > 0 then
+      begin
+        let slice_avg = calc_avg (list_to_array !slice) in
+        res_ps := !res_ps ++ (make_list (LL.length !slice) slice_avg)
+      end;
+    assert { LL.length !slice > 0 -> LL.length !res_ps > 0 };
+    let pr: ref (option int) = ref None in
+    let res_ps_arr: array int = list_to_array !res_ps in
+    assert { length res_ps_arr = LL.length !res_ps };
+    for i = 0 to length res_ps_arr - 1 do
+    invariant { 0 <= i <= length res_ps_arr }
+    invariant { i > 0 -> LL.length !res_ranges > 0 }
+    invariant { LL.length !res_ranges <= i }          (* this is needed to avoid timeout on 2nd `ensures`
+                                                         of the function *)
+    invariant { list_elems_are_correct_index !res_ranges (length res_ps_arr) }
+      if i = 0 then
+        res_ranges := !res_ranges ++ (L.Cons i L.Nil)
+      else if not option_eq !pr (Some res_ps_arr[i]) then
+        res_ranges := !res_ranges ++ (L.Cons i L.Nil);
+      pr := Some res_ps_arr[i]
+    done;
+    assert { length ps > 0 -> (LL.length !res_ranges > 0) /\ (LL.length !res_ps > 0) };
+    (!res_ranges, !res_ps)
+  
+
+  let find_clusters_centers  (* TODO add ensures about size of result and maybe values in tuples *)
+    (ranges isovalues: L.list int) (ratio: int) (nesting: int): L.list (int, int) =
+  requires { LL.length ranges <= LL.length isovalues }
+  requires { list_elems_are_correct_index ranges (LL.length isovalues) }
+  if LL.length ranges = 0 || LL.length isovalues = 0 then
+    L.Nil
+  else begin
+    let res: ref (L.list (int, int)) = ref L.Nil in
+    let max_irange: int = LL.length ranges - 1 in
+    let prev_isovalue: ref (option int) = ref None in
+    let ranges_arr: array int = list_to_array ranges in
+    let isovalues_arr: array int = list_to_array isovalues in
+    assert { (* TODO asserts can be removed *)
+      forall k:int. 0 <= k < LL.length isovalues ->
+      Some isovalues_arr[k] = list_nth isovalues k };
+    assert {
+      forall k:int. 0 <= k < LL.length ranges ->
+      Some ranges_arr[k] = list_nth ranges k };
+    for irange = 0 to max_irange do
+      (* Why3 checks automatically "indexes out of bounds" when it sees `[..]`. Here too.
+       * `irange` is OK obviously, but `isovalues_arr[..]` is not obvious: the 2nd `requires {..}`
+       * is not enough bcs Why3 does not know that `isovalues` are the same items as `isovalues_arr`
+       * (XXX current implementation of `list_to_array` does not ensure it - this must be fixed!!!)
+       *)
+      let isovalue: int = isovalues_arr[ranges_arr[irange]] in
+      let skip_common: ref bool = ref false in
+      let left: ref int = ref 0 in
+      let right: ref int = ref 0 in    
+      match !prev_isovalue with
+      | None                 -> ()
+      | Some prev_isovalue_v ->
+        if isovalue > prev_isovalue_v && num_ge (calc_ratio isovalue prev_isovalue_v) (Fin ratio) then
+        begin
+          right := ranges_arr[irange];
+          left := ranges_arr[max (irange - 1) 0]
+        end
+        else if isovalue < prev_isovalue_v && num_ge (calc_ratio prev_isovalue_v isovalue) (Fin ratio) then
+        begin
+          left := ranges_arr[irange];
+          right := ranges_arr[min (irange + 1) max_irange]
+        end
+        else
+        begin
+          prev_isovalue := Some isovalue;
+          skip_common := true
+        end;
+        if not !skip_common then
+        begin
+          if !right = !left then incr right;
+          left := !left + nesting;
+          right := !right + nesting;
+          if LL.length !res = 0 || not (option_tuple_eq (list_last !res) (Some (!left, !right))) then
+            res := !res ++ (L.Cons (!left, !right) L.Nil);
+        end
+      end;
+      prev_isovalue := Some isovalue
+    done;
+    !res
+  end
+
+
+(*
+def find_clusters_centers(
+        *,
+        ranges:RangeBounds,
+        isovalues:Isolines,
+        ratio:float=2,
+        nesting:int=0) -> list[tuple[int,int]]:
+    '''Finds high concentrations of points based on the approximation of the distance
+    between neighboring points by rectangles. The input from approximation is ranges and isovalues
+    '''
+    prev_isovalue = None
+    res = []
+    max_irange = len(ranges) - 1
+    for irange in range(0, max_irange + 1):
+        isovalue = isovalues[ranges[irange]]
+        if prev_isovalue is not None:
+            if isovalue > prev_isovalue and calc_ratio(isovalue, prev_isovalue) >= ratio:
+                # left___/‾‾
+                right = ranges[irange]
+                left = ranges[max(irange - 1, 0)]
+            elif isovalue < prev_isovalue and calc_ratio(prev_isovalue, isovalue) >= ratio:
+                # ‾‾\___right
+                left = ranges[irange]
+                right = ranges[min(irange + 1, max_irange)]
+            else:
+                prev_isovalue = isovalue
+                continue
+            if right == left:
+                right += 1
+            left += nesting
+            right += nesting
+            if not res or res[-1] != (left, right):
+                # ‾‾\___, ___/‾‾ such cases would be reported twice w/o this "if" checking that
+                # if was not reported in `res` in the previous time:
+                res.append((left, right))
+        prev_isovalue = isovalue
+    return res *)
+
+  let calc_clusters (ps: array int) : L.list (int, int) =
+    let diffs = calc_diffs ps false in
+    let (ranges, isovalues) = approximate_by_rectangles diffs 2 in
+    find_clusters_centers ranges isovalues 2 0
+
+
+(*def calc_clusters(ps:list[int]):
+    diffs = calc_diffs(ps)
+    ranges, isovalues = approximate_by_rectangles(diffs, tolerance=2)
+    clusters = find_clusters_centers(ranges=ranges, isovalues=isovalues, nesting=0)
+    return clusters*)
+
+end
